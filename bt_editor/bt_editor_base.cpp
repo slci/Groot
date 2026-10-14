@@ -1,5 +1,4 @@
 #include "bt_editor_base.h"
-#include <behaviortree_cpp_v3/decorators/subtree_node.h>
 #include <QDebug>
 
 void AbsBehaviorTree::clear()
@@ -146,7 +145,8 @@ bool NodeModel::operator ==(const NodeModel &other) const
 {
     bool is_same = ( type == other.type &&
                     ports.size() == other.ports.size() &&
-                    registration_ID == other.registration_ID);
+                    registration_ID == other.registration_ID &&
+                    inferred_from_usage == other.inferred_from_usage);
     if( ! is_same ) return false;
 
     auto other_it = other.ports.begin();
@@ -173,6 +173,7 @@ NodeModel &NodeModel::operator =(const BT::TreeNodeManifest &src)
 {
     this->type = src.type;
     this->registration_ID = QString::fromStdString(src.registration_ID);
+    this->inferred_from_usage = false;
     for (const auto& port_it: src.ports)
     {
         const auto& port_name = port_it.first;
@@ -192,13 +193,11 @@ const NodeModels &BuiltinNodeModels()
     {
         BT::BehaviorTreeFactory factory;
 
-        factory.registerNodeType<BT::SubtreeNode>("Root");
-
         NodeModels out;
         for( const auto& it: factory.manifests())
         {
             const auto& model_name = it.first;
-            if( model_name == "SubTree" || model_name == "SubTreePlus" )
+            if( model_name == "SubTree" )
             {
                 continue;
             }
@@ -207,6 +206,10 @@ const NodeModels &BuiltinNodeModels()
             groot_model = bt_model;
             out.insert( { QString::fromStdString(model_name), std::move(groot_model) });
         }
+        NodeModel root;
+        root.type = BT::NodeType::DECORATOR;
+        root.registration_ID = "Root";
+        out.insert({"Root", root});
         return out;
      }();
 
@@ -218,6 +221,6 @@ PortModel &PortModel::operator =(const BT::PortInfo &src)
     this->direction = src.direction();
     this->description = QString::fromStdString(src.description());
     this->type_name = QString::fromStdString(BT::demangle(src.type()));
-    this->default_value = QString::fromStdString( src.defaultValue());
+    this->default_value = QString::fromStdString(src.defaultValueString());
     return *this;
 }

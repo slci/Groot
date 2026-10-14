@@ -1,283 +1,223 @@
 #include "sidepanel_monitor.h"
 #include "ui_sidepanel_monitor.h"
-#include <QLineEdit>
-#include <QPushButton>
+
+#include <QDomDocument>
 #include <QMessageBox>
 #include <QTimer>
-#include <QLabel>
-#include <QDebug>
+#include <cstring>
 
 #include "mainwindow.h"
 #include "utils.h"
 
-SidepanelMonitor::SidepanelMonitor(QWidget *parent,
-                                   const QString &address,
-                                   const QString &publisher_port,
-                                   const QString &server_port) :
-    QFrame(parent),
-    ui(new Ui::SidepanelMonitor),
-    _zmq_context(1),
-    _zmq_subscriber(_zmq_context, ZMQ_SUB),
-    _connected(false),
-    _msg_count(0),
-    _parent(parent)
+SidepanelMonitor::SidepanelMonitor(QWidget* parent, const QString& address,
+                                   const QString& publisher_port,
+                                   const QString& server_port)
+    : QFrame(parent), ui(new Ui::SidepanelMonitor),
+      _zmq_context(1), _zmq_client(_zmq_context, ZMQ_REQ),
+      _connected(false), _msg_count(0), _parent(parent)
 {
+    Q_UNUSED(publisher_port);
     ui->setupUi(this);
-    this->set_load_tree_timeout_ms(_load_tree_default_timeout_ms);
-
-    if ( !address.isEmpty() )
-    {
-        ui->lineEdit_address->setText(address);
-    }
-    if ( !publisher_port.isEmpty() )
-    {
-        ui->lineEdit_publisher->setText(publisher_port);
-    }
-    if ( !server_port.isEmpty() )
-    {
-        ui->lineEdit_server->setText(server_port);
-    }
-
+    ui->label_publisher->hide();
+    ui->lineEdit_publisher->hide();
+    if (!address.isEmpty()) ui->lineEdit_address->setText(address);
+    if (!server_port.isEmpty()) ui->lineEdit_server->setText(server_port);
+    _load_tree_timeout_ms = _load_tree_default_timeout_ms;
+    _zmq_client.set(zmq::sockopt::linger, 0);
     _timer = new QTimer(this);
-    connect( _timer, &QTimer::timeout, this, &SidepanelMonitor::on_timer );
+    connect(_timer, &QTimer::timeout, this, &SidepanelMonitor::on_timer);
 }
 
 SidepanelMonitor::~SidepanelMonitor()
 {
+    _timer->stop();
+    stopRecording();
+    _zmq_client.close();
     delete ui;
 }
 
 void SidepanelMonitor::clear()
 {
-    if( _connected ) this->on_Connect();
+    if (_connected) disconnect();
 }
 
-void SidepanelMonitor::on_timer()
+bool SidepanelMonitor::request(BT::Monitor::RequestType type, std::string& payload,
+                               BT::Monitor::TreeUniqueUUID& tree_id,
+                               const std::string& extra_part)
 {
-    if( !_connected ) return;
+    try {
+        BT::Monitor::RequestHeader header(type);
+        zmq::multipart_t outgoing;
+        outgoing.addstr(BT::Monitor::SerializeHeader(header));
+        if (!extra_part.empty()) outgoing.addstr(extra_part);
+        if (!outgoing.send(_zmq_client)) return false;
 
-    zmq::message_t msg;
-    try{
-        while(  _zmq_subscriber.recv(msg) )
-        {
-            _msg_count++;
-            ui->labelCount->setText( QString("Messages received: %1").arg(_msg_count) );
-
-            const char* buffer = reinterpret_cast<const char*>(msg.data());
-
-            const uint32_t header_size = flatbuffers::ReadScalar<uint32_t>( buffer );
-            const uint32_t num_transitions = flatbuffers::ReadScalar<uint32_t>( &buffer[4+header_size] );
-
-            std::vector<std::pair<int, NodeStatus>> node_status;
-            // check uid in the index, if failed load tree from server
-            try{
-                for(size_t offset = 4; offset < header_size +4; offset +=3 )
-                {
-                    const uint16_t uid = flatbuffers::ReadScalar<uint16_t>(&buffer[offset]);
-                    _uid_to_index.at(uid);
-                }
-
-                for(size_t t=0; t < num_transitions; t++)
-                {
-                    size_t offset = 8 + header_size + 12*t;
-                    const uint16_t uid = flatbuffers::ReadScalar<uint16_t>(&buffer[offset+8]);
-                    _uid_to_index.at(uid);
-                }
-
-                for(size_t offset = 4; offset < header_size +4; offset +=3 )
-                {
-                    const uint16_t uid = flatbuffers::ReadScalar<uint16_t>(&buffer[offset]);
-                    const uint16_t index = _uid_to_index.at(uid);
-                    AbstractTreeNode* node = _loaded_tree.node( index );
-                    node->status = convert(flatbuffers::ReadScalar<Serialization::NodeStatus>(&buffer[offset+2] ));
-                }
-
-                //qDebug() << "--------";
-                for(size_t t=0; t < num_transitions; t++)
-                {
-                    size_t offset = 8 + header_size + 12*t;
-
-                    // const double t_sec  = flatbuffers::ReadScalar<uint32_t>( &buffer[offset] );
-                    // const double t_usec = flatbuffers::ReadScalar<uint32_t>( &buffer[offset+4] );
-                    // double timestamp = t_sec + t_usec* 0.000001;
-                    const uint16_t uid = flatbuffers::ReadScalar<uint16_t>(&buffer[offset+8]);
-                    const uint16_t index = _uid_to_index.at(uid);
-                    // NodeStatus prev_status = convert(flatbuffers::ReadScalar<Serialization::NodeStatus>(&buffer[index+10] ));
-                    NodeStatus status  = convert(flatbuffers::ReadScalar<Serialization::NodeStatus>(&buffer[offset+11] ));
-
-                    _loaded_tree.node(index)->status = status;
-                    node_status.push_back( {index, status} );
-
-                }
-            }
-            catch( std::out_of_range& err) {
-                qDebug() << "Reload tree from server";
-                if( !getTreeFromServer() ) {
-                    _connected = false;
-                    ui->lineEdit_address->setDisabled(false);
-                    _timer->stop();
-                    connectionUpdate(false);
-                    return;
-                }
-            }
-
-            // update the graphic part
-            emit changeNodeStyle( "BehaviorTree", node_status );
-
-            // lock editing of nodes
-            auto main_win = dynamic_cast<MainWindow*>( _parent );
-            main_win->lockEditing(true);
-        }
-    }
-    catch( zmq::error_t& err)
-    {
-        qDebug() << "ZMQ receive failed: " << err.what();
+        zmq::multipart_t incoming;
+        if (!incoming.recv(_zmq_client) || incoming.size() < 1 || incoming.size() > 2 ||
+            incoming[0].size() != BT::Monitor::ReplyHeader::size()) return false;
+        const auto reply = BT::Monitor::DeserializeReplyHeader(incoming[0].to_string());
+        if (reply.request != header || reply.request.protocol != BT::Monitor::kProtocolID)
+            return false;
+        tree_id = reply.tree_id;
+        payload = incoming.size() == 2 ? incoming[1].to_string() : std::string();
+        return true;
+    } catch (const zmq::error_t&) {
+        return false;
     }
 }
 
 bool SidepanelMonitor::getTreeFromServer()
 {
-    try{
-        zmq::message_t request(0);
-        zmq::message_t reply;
+    std::string xml;
+    BT::Monitor::TreeUniqueUUID tree_id;
+    _zmq_client.set(zmq::sockopt::rcvtimeo, _load_tree_timeout_ms);
+    _zmq_client.set(zmq::sockopt::sndtimeo, _load_tree_timeout_ms);
+    if (!request(BT::Monitor::FULLTREE, xml, tree_id)) return false;
 
-        zmq::socket_t  zmq_client( _zmq_context, ZMQ_REQ );
-        zmq_client.connect( _connection_address_req.c_str() );
-
-        zmq_client.setsockopt(ZMQ_RCVTIMEO, &_load_tree_timeout_ms, sizeof(int) );
-
-        zmq_client.send(request, zmq::send_flags::none);
-
-        auto bytes_received  = zmq_client.recv(reply, zmq::recv_flags::none);
-        if( !bytes_received || *bytes_received == 0 )
-        {
-            return false;
+    QDomDocument document;
+    QString error;
+    int line = 0;
+    if (!document.setContent(QString::fromUtf8(xml.data(), int(xml.size())),
+                             &error, &line)) return false;
+    try {
+        auto result = BuildTreeFromRuntimeXML(document);
+        _loaded_tree = std::move(result.first);
+        _uid_to_index = std::move(result.second);
+        _tree_id = tree_id;
+        for (const auto& node : _loaded_tree.nodes()) {
+            if (BuiltinNodeModels().count(node.model.registration_ID) == 0)
+                emit addNewModel(node.model);
         }
-
-        const char* buffer = reinterpret_cast<const char*>(reply.data());
-        auto fb_behavior_tree = Serialization::GetBehaviorTree( buffer );
-
-        auto res_pair = BuildTreeFromFlatbuffers( fb_behavior_tree );
-
-        _loaded_tree  = std::move( res_pair.first );
-        _uid_to_index = std::move( res_pair.second );
-
-        // add new models to registry
-        for(const auto& tree_node: _loaded_tree.nodes())
-        {
-            const auto& registration_ID = tree_node.model.registration_ID;
-            if( BuiltinNodeModels().count(registration_ID) == 0)
-            {
-                addNewModel( tree_node.model );
-            }
-        }
-
-        try {
-            loadBehaviorTree( _loaded_tree, "BehaviorTree" );
-        }
-        catch (std::exception& err) {
-            QMessageBox messageBox;
-            messageBox.critical(this,"Error Connecting to remote server", err.what() );
-            messageBox.show();
-            return false;
-        }
-
-        std::vector<std::pair<int, NodeStatus>> node_status;
-        node_status.reserve(_loaded_tree.nodesCount());
-
-        //  qDebug() << "--------";
-
-        for(size_t t=0; t < _loaded_tree.nodesCount(); t++)
-        {
-            node_status.push_back( { t, _loaded_tree.nodes()[t].status } );
-        }
-        emit changeNodeStyle( "BehaviorTree", node_status );
-    }
-    catch( zmq::error_t& err)
-    {
-        qDebug() << "ZMQ client receive failed: " << err.what();
+        emit loadBehaviorTree(_loaded_tree, "BehaviorTree");
+    } catch (const std::exception&) {
         return false;
     }
+    _zmq_client.set(zmq::sockopt::rcvtimeo, 100);
+    _zmq_client.set(zmq::sockopt::sndtimeo, 100);
+    std::string response;
+    BT::Monitor::TreeUniqueUUID response_tree_id;
+    if (!request(BT::Monitor::TOGGLE_RECORDING, response, response_tree_id, "start") ||
+        response_tree_id != _tree_id) return false;
+    _recording = true;
+    return getStatusFromServer();
+}
+
+bool SidepanelMonitor::getStatusFromServer()
+{
+    std::string bytes;
+    BT::Monitor::TreeUniqueUUID tree_id;
+    if (!request(BT::Monitor::STATUS, bytes, tree_id) ||
+        tree_id != _tree_id || bytes.size() % 3 != 0) return false;
+    std::vector<std::pair<int, NodeStatus>> statuses;
+    statuses.reserve(bytes.size() / 3);
+    for (size_t offset = 0; offset < bytes.size(); offset += 3) {
+        uint16_t uid = 0;
+        std::memcpy(&uid, bytes.data() + offset, sizeof(uid));
+        const auto found = _uid_to_index.find(uid);
+        if (found == _uid_to_index.end()) return false;
+        const auto raw = static_cast<uint8_t>(bytes[offset + 2]);
+        if (raw > 10 + static_cast<uint8_t>(NodeStatus::SKIPPED)) return false;
+        const auto status = raw >= 10 ? NodeStatus::IDLE : static_cast<NodeStatus>(raw);
+        if (raw >= 10 && raw != 10)
+            statuses.emplace_back(found->second, static_cast<NodeStatus>(raw - 10));
+        _loaded_tree.node(found->second)->status = status;
+        statuses.emplace_back(found->second, status);
+    }
+    emit changeNodeStyle("BehaviorTree", statuses);
+    dynamic_cast<MainWindow*>(_parent)->lockEditing(true);
     return true;
+}
+
+void SidepanelMonitor::on_timer()
+{
+    if (!_connected) return;
+    std::string bytes;
+    BT::Monitor::TreeUniqueUUID tree_id;
+    if (!request(BT::Monitor::GET_TRANSITIONS, bytes, tree_id)) {
+        disconnect();
+        return;
+    }
+    if (tree_id != _tree_id) {
+        if (!getTreeFromServer()) disconnect();
+        return;
+    }
+    if (bytes.size() % 9 != 0) {
+        disconnect();
+        return;
+    }
+    std::vector<std::pair<int, NodeStatus>> statuses;
+    statuses.reserve(bytes.size() / 9);
+    for (size_t offset = 0; offset < bytes.size(); offset += 9) {
+        uint16_t uid = 0;
+        std::memcpy(&uid, bytes.data() + offset + 6, sizeof(uid));
+        const auto found = _uid_to_index.find(uid);
+        if (found == _uid_to_index.end()) {
+            if (!getTreeFromServer()) disconnect();
+            return;
+        }
+        const auto raw = static_cast<uint8_t>(bytes[offset + 8]);
+        if (raw > static_cast<uint8_t>(NodeStatus::SKIPPED)) {
+            disconnect();
+            return;
+        }
+        const auto status = static_cast<NodeStatus>(raw);
+        _loaded_tree.node(found->second)->status = status;
+        statuses.emplace_back(found->second, status);
+    }
+    ui->labelCount->setText(QString("Transition polls: %1").arg(++_msg_count));
+    if (!statuses.empty()) emit changeNodeStyle("BehaviorTree", statuses);
+    dynamic_cast<MainWindow*>(_parent)->lockEditing(true);
+}
+
+void SidepanelMonitor::stopRecording()
+{
+    if (!_recording) return;
+    std::string response;
+    BT::Monitor::TreeUniqueUUID tree_id;
+    request(BT::Monitor::TOGGLE_RECORDING, response, tree_id, "stop");
+    _recording = false;
+}
+
+void SidepanelMonitor::disconnect()
+{
+    _timer->stop();
+    stopRecording();
+    _connected = false;
+    ui->lineEdit_address->setEnabled(true);
+    ui->lineEdit_server->setEnabled(true);
+    _zmq_client.close();
+    _zmq_client = zmq::socket_t(_zmq_context, ZMQ_REQ);
+    _zmq_client.set(zmq::sockopt::linger, 0);
+    emit connectionUpdate(false);
 }
 
 void SidepanelMonitor::on_Connect()
 {
-    if( !_connected )
-    {
-        QString address = ui->lineEdit_address->text();
-        if( address.isEmpty() )
-        {
-            address = ui->lineEdit_address->placeholderText();
-            ui->lineEdit_address->setText(address);
-        }
-
-        QString publisher_port = ui->lineEdit_publisher->text();
-        if( publisher_port.isEmpty() )
-        {
-            publisher_port = ui->lineEdit_publisher->placeholderText();
-            ui->lineEdit_publisher->setText(publisher_port);
-        }
-
-        QString server_port = ui->lineEdit_server->text();
-        if( server_port.isEmpty() )
-        {
-          publisher_port = ui->lineEdit_server->placeholderText();
-          ui->lineEdit_server->setText(publisher_port);
-        }
-
-        bool failed = false;
-        if( !address.isEmpty() )
-        {
-            _connection_address_pub = "tcp://" + address.toStdString() + ":" + publisher_port.toStdString();
-            _connection_address_req = "tcp://" + address.toStdString() + ":" + server_port.toStdString();
-
-            try{
-                _zmq_subscriber.connect( _connection_address_pub.c_str() );
-
-                int timeout_ms = 1;
-                _zmq_subscriber.setsockopt(ZMQ_SUBSCRIBE, "", 0);
-                _zmq_subscriber.setsockopt(ZMQ_RCVTIMEO, &timeout_ms, sizeof(int) );
-
-                if( !getTreeFromServer() )
-                {
-                    failed = true;
-                    _connected = false;
-                }
-                // After we try get a tree on connect, reset to the default timeout.
-                // This is done so that we only use the increased autoconnect timeout once.
-                this->set_load_tree_timeout_ms(_load_tree_default_timeout_ms);
-            }
-            catch(zmq::error_t& err)
-            {
-                failed = true;
-            }
-        }
-        else {
-            failed = true;
-        }
-
-        if( !failed )
-        {
+    if (_connected) {
+        disconnect();
+        return;
+    }
+    QString address = ui->lineEdit_address->text();
+    if (address.isEmpty()) address = ui->lineEdit_address->placeholderText();
+    QString port = ui->lineEdit_server->text();
+    if (port.isEmpty()) port = ui->lineEdit_server->placeholderText();
+    ui->lineEdit_address->setText(address);
+    ui->lineEdit_server->setText(port);
+    _connection_address_req = "tcp://" + address.toStdString() + ":" + port.toStdString();
+    _msg_count = 0;
+    try {
+        _zmq_client.connect(_connection_address_req);
+        if (getTreeFromServer()) {
             _connected = true;
-            ui->lineEdit_address->setDisabled(true);
-            ui->lineEdit_publisher->setDisabled(true);
+            ui->lineEdit_address->setEnabled(false);
+            ui->lineEdit_server->setEnabled(false);
             _timer->start(_timer_period_ms);
-            connectionUpdate(true);
+            emit connectionUpdate(true);
+            return;
         }
-        else{
-            QMessageBox::warning(this,
-                                 tr("ZeroMQ connection"),
-                                 tr("Was not able to connect to [%1]\n").arg(_connection_address_pub.c_str()),
-                                 QMessageBox::Close);
-        }
+    } catch (const zmq::error_t&) {
     }
-    else{
-        _connected = false;
-        ui->lineEdit_address->setDisabled(false);
-        ui->lineEdit_publisher->setDisabled(false);
-        _timer->stop();
-
-        connectionUpdate(false);
-    }
+    disconnect();
+    QMessageBox::warning(this, tr("ZeroMQ connection"),
+                         tr("Could not connect to %1").arg(QString::fromStdString(_connection_address_req)));
 }

@@ -1,24 +1,29 @@
-[![Build Status](https://travis-ci.org/BehaviorTree/Groot.svg?branch=master)](https://travis-ci.org/BehaviorTree/Groot)
+# Experimental Groot 1 port for BehaviorTree.CPP v4
 
-# DEPRECATION notice
+This fork adapts the original Groot 1 application to BehaviorTree.CPP v4. It has
+been built and tested with BehaviorTree.CPP 4.10.0 and Qt 5.15 on Linux.
 
-Groot is being rewritten from the ground up (https://www.behaviortree.dev/groot). 
-This repository will be in "maintenance mode" and won't receive any significant update. 
-Issues will **not** be addressed by the main author but, occasionally, Pull Requests **might** be checked and merged.
+Supported paths:
 
-**Groot 1.0 is compatible only with BehaviorTree.CPP 3.8.x**, and it is not expected to 
-work correctly with BehaviorTree.CPP 4.x.
+- Edit and save `BTCPP_format="4"` XML, including subtrees, custom node models,
+  direct custom node tags, and the existing SVG export and GUI editing tools.
+- Monitor a running tree through `BT::Groot2Publisher` on its single TCP server
+  port (1667 by default). Tree structure, current status, and short-lived node
+  transitions are shown.
+- Replay `.btlog` files written by `BT::FileLogger2`.
 
-Groot 2.0 introduces many new functionalities and compatibility with BT.CPP 4.0.
-
-**If you use Groot at work** and you want to know how we are redesigning it to be more flexible, 
-reliable, fast and scalable, get in touch with the main author: dfaconti@aurynrobotics.com.
+The port does not implement Groot2's breakpoint, blackboard inspection, or
+log capture controls. Groot 1 `.fbl` traces are not accepted; use `FileLogger2`
+for v4 logs. Existing v3 XML should be migrated to v4 before loading. When
+custom nodes are used directly without a `TreeNodesModel`, the editor shows
+their type as Unspecified and preserves their direct XML tags when saving.
 
 # Groot 
 
 **Groot** is a Graphical Editor, written in C++ and Qt, to create [BehaviorTrees](https://en.wikipedia.org/wiki/Behavior_tree).
 
-It is compliant with the the library [BehaviorTree.CPP](https://github.com/BehaviorTree/BehaviorTree.CPP).
+It is based on the original [Groot](https://github.com/BehaviorTree/Groot)
+application and uses [BehaviorTree.CPP](https://github.com/BehaviorTree/BehaviorTree.CPP).
 
 [![Groot Editor](groot-screenshot.png)](https://vimeo.com/275066768)
 
@@ -31,41 +36,38 @@ the graphic user interface are used to design and monitor a Behavior Tree.
 
 # Dependencies, Installation, and Usage
 
-To compile the project you need:
-
-- [CMake 3.2](https://cmake.org/download)
-- Qt5 (tested with version 5.5.1), including the SVG module.
-
-On Ubuntu Xenial or later, you can install the dependencies with:
-
-       sudo apt install qtbase5-dev libqt5svg5-dev libzmq3-dev libdw-dev
-      
-Some functionalities of the code related to ROS will work __only__ if the
-project is compiled with _catkin_.
+To compile the project you need CMake 3.16 or newer, a C++17 compiler,
+BehaviorTree.CPP v4, Qt5 development files (Core, Widgets, Gui, OpenGL, Xml,
+Svg, Test, Concurrent), and ZeroMQ with the `zmq.hpp` and `zmq_addon.hpp`
+headers. The monitor is built when ZeroMQ is found.
 
 ## Compilation instructions (Linux)
 
 ```
-git clone --recurse-submodules https://github.com/BehaviorTree/Groot.git
-cd Groot
-cmake -S . -B build
-cmake --build build
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/behaviortree_cpp/v4/install
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
-       
- Note compiling "in-source" is not allowed.   
- 
- ## Compilation instructions (ROS/ROS2)
 
-**Discouraged**
+If Qt5 is installed on the host and BT.CPP v4 is in a Pixi or Conda
+environment, choose the host C and C++ compilers and point CMake at the host
+Qt5 package. Avoid linking host Qt5 with a Conda compiler sysroot.
 
-If you want to compile using `catkin build`(ROS) or `colcon_build` (ROS2)
-then you must be sure that version 3.8.x is used (branch V3.8).
+Run `build/Groot --mode editor --file tree.xml` to edit a v4 tree, or
+`build/Groot --mode monitor --address 127.0.0.1 --server_port 1667 --autoconnect`
+to connect to a `BT::Groot2Publisher`. The old `--publisher_port` option is
+accepted for compatibility but has no effect with the v4 protocol.
 
-You may probably want to compile BehaviorTree.CPP in the same workspace.
+The default CTest suite covers v4 XML editing, runtime tree parsing, and
+`FileLogger2` replay. The original v3 fixture tests can be built with
+`-DGROOT_BUILD_LEGACY_TESTS=ON`; they have not been migrated to v4. The live
+publisher test can be run with `QT_QPA_PLATFORM=minimal build/test/v4_compat_test
+runtimeMonitor` on a host that permits local TCP sockets.
 
-```
-git clone --branch v3.8 https://github.com/BehaviorTree/BehaviorTree.CPP.git
-```
+For desktop validation on a Wayland session, run
+`GROOT_SAMPLE_TREE=/absolute/path/to/v4-tree.xml GROOT_SCREENSHOT_DIR=/tmp
+build/test/v4_compat_test desktopWorkflow`. This opens the editor, subtree,
+replay, and live monitor windows and saves four `groot-v4-*.png` screenshots.
 
 # Licence       
 

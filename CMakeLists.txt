@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.16)
 
 # Update the policy setting to avoid an error when loading the ament_cmake package
 # at the current cmake version level
@@ -8,15 +8,12 @@ endif()
 
 project(groot)
 
-find_package(Qt5 COMPONENTS  Core Widgets Gui OpenGL Xml Svg)
+find_package(Qt5 REQUIRED COMPONENTS Core Widgets Gui OpenGL Xml Svg Concurrent)
+find_package(behaviortree_cpp 4 REQUIRED)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH}  "${CMAKE_CURRENT_LIST_DIR}/cmake")
 
-if(NOT CMAKE_VERSION VERSION_LESS 3.1)
-    set(CMAKE_CXX_STANDARD 11)
-    set(CMAKE_CXX_STANDARD_REQUIRED ON)
-else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 #############################################################
 find_package(ament_cmake QUIET)
@@ -24,10 +21,8 @@ find_package(catkin QUIET)
 
 if(ament_cmake_FOUND)
   find_package(ament_index_cpp REQUIRED)
-  find_package(behaviortree_cpp_v3 REQUIRED)
-
   set(dependencies
-    behaviortree_cpp_v3
+    behaviortree_cpp
   )
 
   message(STATUS "---------------------")
@@ -38,7 +33,7 @@ elseif(catkin_FOUND OR CATKIN_DEVEL_PREFIX OR CATKIN_BUILD_BINARY_PACKAGE )
   set(catkin_FOUND 1)
   # add_definitions( -DUSING_ROS )
 
-  find_package(catkin REQUIRED COMPONENTS behaviortree_cpp_v3)
+  find_package(catkin REQUIRED COMPONENTS behaviortree_cpp)
 
   message(STATUS "----------------------")
   message(STATUS "Compiling with CATKIN.")
@@ -47,7 +42,7 @@ elseif(catkin_FOUND OR CATKIN_DEVEL_PREFIX OR CATKIN_BUILD_BINARY_PACKAGE )
   catkin_package(
     INCLUDE_DIRS 
     LIBRARIES qt_node_editor
-    CATKIN_DEPENDS behaviortree_cpp_v3
+    CATKIN_DEPENDS behaviortree_cpp
     DEPENDS 
     )
 endif()
@@ -81,27 +76,6 @@ set(BUILD_UNIT_TESTS OFF CACHE BOOL "")
 set(BUILD_TOOLS OFF CACHE BOOL "")
 set(BUILD_TESTING OFF CACHE BOOL "")
 set(CATKIN_ENABLE_TESTING OFF CACHE BOOL "")
-
-if(NOT catkin_FOUND AND NOT ament_cmake_FOUND)
-
-    if(NOT EXISTS depend/BehaviorTree.CPP)
-      message("Can't find the submodule BehaviorTree.CPP")
-      message("Run [git submodule update --init --recursive]")
-    endif()
-
-    SET(BUILD_EXAMPLES OFF CACHE BOOL "Build tutorials and examples" FORCE)
-    SET(BUILD_UNIT_TESTS OFF CACHE BOOL "Build the unit tests" FORCE)
-    SET(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-
-    # look for BehaviorTree.CPP as submodule
-    # use git submodule only if you are not compiling with catkin
-    add_subdirectory( depend/BehaviorTree.CPP )
-    include_directories( depend/BehaviorTree.CPP/include )
-
-    message(STATUS "----------------------------------")
-    message(STATUS "BehaviourTree.CPP submodule found.")
-    message(STATUS "----------------------------------")
-endif()
 
 ##########################################
 
@@ -159,14 +133,10 @@ add_library(behavior_tree_editor SHARED
     ${FORMS_HEADERS}
 )
 
-SET(GROOT_DEPENDENCIES QtNodeEditor ncurses ncursesw tinfo )
+SET(GROOT_DEPENDENCIES QtNodeEditor Qt5::Concurrent behaviortree_cpp::behaviortree_cpp)
 
-if(ament_cmake_FOUND)
-    ament_target_dependencies(behavior_tree_editor ${dependencies})
-elseif( catkin_FOUND )
+if(catkin_FOUND)
     SET(GROOT_DEPENDENCIES ${GROOT_DEPENDENCIES} ${catkin_LIBRARIES} )
-else()
-    SET(GROOT_DEPENDENCIES ${GROOT_DEPENDENCIES} behaviortree_cpp_v3 )
 endif()
 
 if( ZMQ_FOUND )
@@ -174,7 +144,7 @@ if( ZMQ_FOUND )
         find_package(cppzmq)
         SET(GROOT_DEPENDENCIES ${GROOT_DEPENDENCIES} cppzmq)
     else()
-        SET(GROOT_DEPENDENCIES ${GROOT_DEPENDENCIES} zmq)
+        SET(GROOT_DEPENDENCIES ${GROOT_DEPENDENCIES} ${ZMQ_LIBRARIES})
     endif()
 endif()
 
@@ -214,7 +184,7 @@ INSTALL(TARGETS Groot RUNTIME DESTINATION ${GROOT_BIN_DESTINATION} )
 
 if(ament_cmake_FOUND)
   ament_export_include_directories(include)
-  ament_export_dependencies(${GROOT_DEPENDENCIES} ${dependencies})
+  ament_export_dependencies(behaviortree_cpp)
   ament_export_libraries(behavior_tree_editor)
   ament_package()
 endif()

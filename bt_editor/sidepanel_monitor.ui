@@ -93,7 +93,7 @@
    <item>
     <widget class="QLabel" name="labelCount">
      <property name="text">
-      <string>Messages Received: 0</string>
+      <string>Transition polls: 0</string>
      </property>
     </widget>
    </item>

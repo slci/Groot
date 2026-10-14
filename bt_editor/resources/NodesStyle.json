@@ -3,6 +3,10 @@
         "icon": ":/icons/svg/letter_A.svg"
     },
 
+    "Unspecified": {
+        "icon": ":/icons/svg/question_mark.svg"
+    },
+
     "Condition": {
         "icon": ":/icons/svg/letter_C.svg",
         "caption_color":  "#44bb44"

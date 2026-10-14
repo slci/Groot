@@ -2,7 +2,8 @@
 #define SIDEPANEL_MONITOR_H
 
 #include <QFrame>
-#include <zmq.hpp>
+#include <zmq_addon.hpp>
+#include <behaviortree_cpp/loggers/groot2_protocol.h>
 
 #include "bt_editor_base.h"
 
@@ -57,13 +58,14 @@ private:
     Ui::SidepanelMonitor *ui;
 
     zmq::context_t _zmq_context;
-    zmq::socket_t  _zmq_subscriber;
+    zmq::socket_t _zmq_client;
 
     QTimer* _timer;
 
     bool _connected;
-    std::string _connection_address_pub;
+    bool _recording = false;
     std::string _connection_address_req;
+    BT::Monitor::TreeUniqueUUID _tree_id{};
     int _msg_count;
 
     int _load_tree_timeout_ms;  // Timeout to get behavior tree.
@@ -71,6 +73,12 @@ private:
     std::unordered_map<int, int> _uid_to_index;
 
     bool getTreeFromServer();
+    bool getStatusFromServer();
+    bool request(BT::Monitor::RequestType type, std::string& payload,
+                 BT::Monitor::TreeUniqueUUID& tree_id,
+                 const std::string& extra_part = {});
+    void stopRecording();
+    void disconnect();
 
     QWidget *_parent;
 

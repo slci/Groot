@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QSettings>
+#include <QStringList>
 
 SidepanelEditor::SidepanelEditor(QtNodes::DataModelRegistry *registry,
                                  NodeModels &tree_nodes_model,
@@ -58,8 +59,15 @@ void SidepanelEditor::updateTreeView()
     ui->paletteTreeWidget->clear();
     _tree_view_category_items.clear();
 
-    for (const QString& category : {"Action", "Condition",
-                                    "Control", "Decorator", "SubTree" } )
+    QStringList categories;
+    for (const auto& entry : _tree_nodes_model) {
+        if (entry.second.inferred_from_usage) {
+            categories << "Unspecified";
+            break;
+        }
+    }
+    categories << "Action" << "Condition" << "Control" << "Decorator" << "SubTree";
+    for (const QString& category : categories)
     {
       auto item = new QTreeWidgetItem(ui->paletteTreeWidget, {category});
       QFont font = item->font(0);
@@ -80,9 +88,13 @@ void SidepanelEditor::updateTreeView()
       {
           continue;
       }
-      QString category = QString::fromStdString(toStr(model.type));
+      QString category = model.inferred_from_usage
+                             ? QStringLiteral("Unspecified")
+                             : QString::fromStdString(toStr(model.type));
       auto parent = _tree_view_category_items[category];
       auto item = new QTreeWidgetItem(parent, {ID});
+      if (model.inferred_from_usage)
+          item->setToolTip(0, tr("Node type is not declared in TreeNodesModel"));
       const bool is_builtin = BuiltinNodeModels().count( ID ) > 0;
       const bool is_editable = (!ui->buttonLock->isChecked() && !is_builtin);
 

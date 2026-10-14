@@ -203,6 +203,7 @@ private:
     QtNodes::PortLayout _current_layout;
 
     NodeModels _treenode_models;
+    std::map<QString, std::vector<NodeStatus>> _last_status_by_tree;
 
     QString _main_tree;
 

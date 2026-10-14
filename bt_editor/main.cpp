@@ -78,7 +78,10 @@ main(int argc, char *argv[])
         MainWindow win( GraphicMode::EDITOR );
         win.setWindowTitle("Groot");
         win.show();
-        win.loadFromXML( ":/crossdoor_with_subtree.xml" );
+        win.loadFromXML(
+            "<root BTCPP_format=\"4\" main_tree_to_execute=\"Demo\">"
+            "<BehaviorTree ID=\"Demo\"><Sequence><AlwaysSuccess/>"
+            "<AlwaysFailure/></Sequence></BehaviorTree></root>");
         return app.exec();
     }
     else{

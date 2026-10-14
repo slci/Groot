@@ -58,8 +58,6 @@ private:
 
     bool eventFilter(QObject *object, QEvent *event) override;
 
-    void loadFromFlatbuffers(const std::vector<int8_t>& serialized_description);
-
     void onRowChanged(int value);
 
     Ui::SidepanelReplay *ui;

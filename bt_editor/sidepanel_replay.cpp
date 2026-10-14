@@ -12,6 +12,8 @@
 #include <QModelIndex>
 #include <QTimer>
 #include <QMessageBox>
+#include <QDomDocument>
+#include <cstring>
 
 #include "bt_editor_base.h"
 #include "mainwindow.h"
@@ -55,8 +57,13 @@ SidepanelReplay::~SidepanelReplay()
 
 void SidepanelReplay::clear()
 {
-    _table_model->setColumnCount(4);
-    _table_model->setRowCount(0);
+    _play_timer->stop();
+    _layout_update_timer->stop();
+    _transitions.clear();
+    _timepoint.clear();
+    _prev_row = -1;
+    _loaded_tree.clear();
+    updateTableModel(_loaded_tree);
 }
 
 void SidepanelReplay::updateTableModel(const AbsBehaviorTree& locaded_tree)
@@ -86,6 +93,10 @@ void SidepanelReplay::updateTableModel(const AbsBehaviorTree& locaded_tree)
         case NodeStatus::IDLE:{
             item = new QStandardItem("IDLE");
             item->setBackground(QColor::fromRgb(222, 222, 222));
+        } break;
+        case NodeStatus::SKIPPED:{
+            item = new QStandardItem("SKIPPED");
+            item->setBackground(QColor::fromRgb(170, 170, 170));
         } break;
         }
         item->setForeground(QColor::fromRgb(0, 0, 0));
@@ -138,13 +149,16 @@ void SidepanelReplay::updateTableModel(const AbsBehaviorTree& locaded_tree)
 
     ui->label->setText( QString("of %1").arg( _timepoint.size() ) );
 
-    ui->spinBox->setValue(0);
-    ui->spinBox->setMaximum( std::max(0 , (int)_timepoint.size()-1) );
+    const QSignalBlocker block_spin(ui->spinBox);
+    const QSignalBlocker block_slider(ui->timeSlider);
+    ui->spinBox->setRange(_timepoint.empty() ? 0 : 1, int(_timepoint.size()));
+    ui->spinBox->setValue(_timepoint.empty() ? 0 : 1);
     ui->spinBox->setEnabled( !_timepoint.empty() );
     ui->timeSlider->setValue( 0 );
     ui->timeSlider->setMaximum( std::max(0 , (int)_timepoint.size()-1) );
     ui->timeSlider->setEnabled( !_timepoint.empty() );
     ui->pushButtonPlay->setEnabled( !_timepoint.empty() );
+    if (!_timepoint.empty()) onRowChanged(int(_timepoint.front().second));
 }
 
 void SidepanelReplay::on_LoadLog()
@@ -155,7 +169,7 @@ void SidepanelReplay::on_LoadLog()
 
     QString fileName = QFileDialog::getOpenFileName(this,
                                                     tr("Open Flow Scene"), directory_path,
-                                                    tr("Flatbuffers log (*.fbl)"));
+                                                    tr("BehaviorTree.CPP v4 log (*.btlog)"));
 
     if (fileName.isEmpty() || !QFileInfo::exists(fileName))
     {
@@ -175,120 +189,109 @@ void SidepanelReplay::on_LoadLog()
     loadLog( content );
 }
 
-void SidepanelReplay::loadLog(const QByteArray &content)
+void SidepanelReplay::loadLog(const QByteArray& content)
 {
-    const char* buffer = reinterpret_cast<const char*>(content.data());
-
-    // how many bytes did we read off the disk (uoffset_t aka uint32_t)
-    const auto read_bytes = content.size();
-
-    // we need at least 4 bytes to read the bt_header_size
-    if( read_bytes < 4 ) {
-        QMessageBox::warning( this, "Log file is empty",
-                             "Failed to load this file.\n"
-                             "This Log file is empty");
-        return;
-    }
-    
-    // read the length of the header section from the file
-    const size_t bt_header_size = flatbuffers::ReadScalar<uint32_t>(buffer);
-
-    // if the length of the header goes past the end of the file, it is invalid
-    if( (bt_header_size == 0) || (bt_header_size > read_bytes) ) {
-        QMessageBox::warning( this, "Log file is corrupt",
-                             "Failed to load this file.\n"
-                             "This Log file corrupted or truncated");
+    constexpr char magic[] = "BTCPP4-FileLogger2";
+    constexpr size_t magic_size = sizeof(magic) - 1;
+    const char* data = content.constData();
+    const size_t size = size_t(content.size());
+    const size_t header_size = magic_size + 1 + 4;
+    if (size < header_size + 8 || std::memcmp(data, magic, magic_size) != 0 ||
+        static_cast<uint8_t>(data[magic_size]) != 1) {
+        QMessageBox::warning(this, "Unsupported log",
+                             "Expected a BehaviorTree.CPP v4 FileLogger2 .btlog file");
         return;
     }
 
-    flatbuffers::Verifier verifier( reinterpret_cast<const uint8_t*>(buffer+4),
-                                   size_t(content.size() -4));
-
-    bool valid_tree = Serialization::VerifyBehaviorTreeBuffer(verifier);
-    if( ! valid_tree )
-    {
-        QMessageBox::warning( this, "Flatbuffer verification failed",
-                             "Failed to load this file.\n"
-                             "Its format is not compatible with the current one");
+    uint32_t xml_size = 0;
+    std::memcpy(&xml_size, data + magic_size + 1, sizeof(xml_size));
+    if (xml_size == 0 || xml_size > size - header_size - 8 ||
+        (size - header_size - xml_size - 8) % 9 != 0) {
+        QMessageBox::warning(this, "Corrupt log", "Invalid XML or transition section");
+        return;
+    }
+    QDomDocument document;
+    QString error;
+    int line = 0;
+    const QString xml = QString::fromUtf8(data + header_size, int(xml_size));
+    if (!document.setContent(xml, &error, &line)) {
+        QMessageBox::warning(this, "Corrupt log", error);
         return;
     }
 
-
-    auto fb_behavior_tree = Serialization::GetBehaviorTree( &buffer[4] );
-
-
-    auto res_pair = BuildTreeFromFlatbuffers( fb_behavior_tree );
-
-    _loaded_tree  = res_pair.first;
-    const auto& uid_to_index = res_pair.second;
-
-    for (const auto& tree_node: _loaded_tree.nodes() )
-    {
-        const QString& ID = tree_node.model.registration_ID;
-        if( BuiltinNodeModels().count( ID ) == 0)
-        {
-            emit addNewModel( tree_node.model );
-        }
+    std::pair<AbsBehaviorTree, std::unordered_map<int, int>> result;
+    try {
+        result = BuildTreeFromRuntimeXML(document);
+    } catch (const std::exception& ex) {
+        QMessageBox::warning(this, "Unsupported tree", ex.what());
+        return;
     }
-
-    emit loadBehaviorTree( _loaded_tree, "BehaviorTree" );
-
+    _loaded_tree = std::move(result.first);
+    const auto& uid_to_index = result.second;
+    const size_t timestamp_offset = header_size + xml_size;
+    int64_t first_timestamp_usec = 0;
+    std::memcpy(&first_timestamp_usec, data + timestamp_offset, sizeof(first_timestamp_usec));
+    const size_t transitions_start = timestamp_offset + sizeof(first_timestamp_usec);
     _transitions.clear();
-    _transitions.reserve( (content.size() - 4 - bt_header_size) / 12 );
-
-    int idle_counter = _loaded_tree.nodes().size();
-    const int total_nodes = _loaded_tree.nodes().size();
+    _transitions.reserve((size - transitions_start) / 9);
+    std::unordered_map<int, NodeStatus> previous;
+    int idle_counter = int(_loaded_tree.nodesCount());
+    const int total_nodes = idle_counter;
     int nearest_restart_transition_index = 0;
-
-    for (size_t offset = 4+bt_header_size; offset < content.size(); offset += 12)
-    {
-        Transition transition;
-        const double t_sec  = flatbuffers::ReadScalar<uint32_t>( &buffer[offset] );
-        const double t_usec = flatbuffers::ReadScalar<uint32_t>( &buffer[offset+4] );
-        double timestamp = t_sec + t_usec* 0.000001;
-        transition.timestamp = timestamp;
-        const uint16_t uid = flatbuffers::ReadScalar<uint16_t>(&buffer[offset+8]);
-        transition.index = uid_to_index.at(uid);
-        transition.prev_status = convert(flatbuffers::ReadScalar<Serialization::NodeStatus>(&buffer[offset+10] ));
-        transition.status      = convert(flatbuffers::ReadScalar<Serialization::NodeStatus>(&buffer[offset+11] ));
-        transition.is_tree_restart = false;
-
-        if(transition.index == 1 &&
-                (transition.status == NodeStatus::RUNNING || transition.status == NodeStatus::IDLE) &&
-                idle_counter >= total_nodes - 1){
-            transition.is_tree_restart = true;
-            nearest_restart_transition_index = _transitions.size();
+    for (size_t offset = transitions_start; offset < size; offset += 9) {
+        uint64_t relative_usec = 0;
+        uint16_t uid = 0;
+        std::memcpy(&relative_usec, data + offset, 6);
+        std::memcpy(&uid, data + offset + 6, 2);
+        auto node = uid_to_index.find(uid);
+        const auto raw_status = static_cast<uint8_t>(data[offset + 8]);
+        if (node == uid_to_index.end() || raw_status > static_cast<uint8_t>(NodeStatus::SKIPPED)) {
+            QMessageBox::warning(this, "Corrupt log", "Unknown node or status in transition section");
+            _transitions.clear();
+            return;
         }
-
-        if(transition.prev_status != NodeStatus::IDLE && transition.status == NodeStatus::IDLE)
-            idle_counter++;
-        else if(transition.prev_status == NodeStatus::IDLE && transition.status != NodeStatus::IDLE)
-            idle_counter--;
-
+        Transition transition{};
+        transition.index = node->second;
+        transition.timestamp = double(first_timestamp_usec + int64_t(relative_usec)) / 1000000.0;
+        transition.prev_status = previous.count(uid) ? previous.at(uid) : NodeStatus::IDLE;
+        transition.status = static_cast<NodeStatus>(raw_status);
+        previous[uid] = transition.status;
+        transition.is_tree_restart = false;
+        if (transition.index == 1 &&
+            (transition.status == NodeStatus::RUNNING || transition.status == NodeStatus::IDLE) &&
+            idle_counter >= total_nodes - 1) {
+            transition.is_tree_restart = true;
+            nearest_restart_transition_index = int(_transitions.size());
+        }
+        if (transition.prev_status != NodeStatus::IDLE && transition.status == NodeStatus::IDLE)
+            ++idle_counter;
+        else if (transition.prev_status == NodeStatus::IDLE && transition.status != NodeStatus::IDLE)
+            --idle_counter;
         transition.nearest_restart_transition_index = nearest_restart_transition_index;
-
         _transitions.push_back(transition);
     }
-
     _timepoint.clear();
     _prev_row = -1;
+    for (const auto& node : _loaded_tree.nodes()) {
+        if (BuiltinNodeModels().count(node.model.registration_ID) == 0)
+            emit addNewModel(node.model);
+    }
+    emit loadBehaviorTree(_loaded_tree, "BehaviorTree");
     updateTableModel(_loaded_tree);
-
-
-    // We need to lock the nodes after they are loaded
-    auto main_win = dynamic_cast<MainWindow*>( _parent );
-    main_win->lockEditing(true);
+    dynamic_cast<MainWindow*>(_parent)->lockEditing(true);
 }
-
 
 void SidepanelReplay::on_spinBox_valueChanged(int value)
 {
-    if( ui->timeSlider->value() != value)
+    const int index = value - 1;
+    if (_timepoint.empty() || index < 0 || size_t(index) >= _timepoint.size())
+        return;
+    if( ui->timeSlider->value() != index)
     {
-        ui->timeSlider->setValue( value );
+        ui->timeSlider->setValue( index );
     }
 
-    int row = _timepoint[value].second;
+    int row = _timepoint[index].second;
 
     ui->tableView->scrollTo( _table_model->index(row,0), QAbstractItemView::PositionAtCenter  );
 
@@ -297,9 +300,11 @@ void SidepanelReplay::on_spinBox_valueChanged(int value)
 
 void SidepanelReplay::on_timeSlider_valueChanged(int value)
 {
-    if( ui->spinBox->value() != value)
+    if (_timepoint.empty() || value < 0 || size_t(value) >= _timepoint.size())
+        return;
+    if( ui->spinBox->value() != value + 1)
     {
-        ui->spinBox->setValue( value );
+        ui->spinBox->setValue( value + 1 );
     }
 
     int row = _timepoint[value].second;
@@ -310,6 +315,8 @@ void SidepanelReplay::on_timeSlider_valueChanged(int value)
 
 void SidepanelReplay::onRowChanged(int current_row)
 {
+    if (_transitions.empty() || _table_model->rowCount() == 0)
+        return;
     current_row = std::min( current_row, _table_model->rowCount() -1 );
     current_row = std::max( current_row, 0 );
 
@@ -379,7 +386,7 @@ void SidepanelReplay::updatedSpinAndSlider(int row)
     index = std::min( index, static_cast<int>(_timepoint.size()) -1 );
     index = std::max( index, 0 );
 
-    ui->spinBox->setValue(index);
+    ui->spinBox->setValue(index + 1);
     ui->timeSlider->setValue(index);
 }
 

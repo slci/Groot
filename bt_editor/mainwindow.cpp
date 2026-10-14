@@ -95,7 +95,6 @@ MainWindow::MainWindow(GraphicMode initial_mode,
     {
         registerModel( model.first, model.second );
         _treenode_models.insert( { model.first, model.second } );
-        qDebug() << "adding model: " << model.first;
     }
     //------------------------------------------------------
 
@@ -306,13 +305,8 @@ void MainWindow::loadFromXML(const QString& xml_text)
             throw std::runtime_error( tr("Error parsing XML (line %1): %2").arg(errorLine).arg(errorMsg).toStdString() );
         }
         //---------------
-        std::vector<QString> registered_ID;
-        for (const auto& it: _treenode_models)
-        {
-            registered_ID.push_back( it.first );
-        }
         std::vector<QString> error_messages;
-        bool done = VerifyXML(document, registered_ID, error_messages );
+        bool done = VerifyXML(document, _treenode_models, error_messages );
 
         if( !done )
         {
@@ -467,6 +461,7 @@ QString MainWindow::saveToXML() const
     const char* COMMENT_SEPARATOR = " ////////// ";
 
     QDomElement root = doc.createElement( "root" );
+    root.setAttribute("BTCPP_format", "4");
     doc.appendChild( root );
 
     if( _main_tree.isEmpty() == false)
@@ -507,7 +502,8 @@ QString MainWindow::saveToXML() const
         const auto& ID    = tree_it.first;
         const auto& model = tree_it.second;
 
-        if( BuiltinNodeModels().count(ID) != 0 )
+        if( BuiltinNodeModels().count(ID) != 0 || model.inferred_from_usage ||
+            model.type == NodeType::SUBTREE )
         {
             continue;
         }
@@ -954,9 +950,12 @@ void MainWindow::onAddToModelRegistry(const NodeModel &model)
         return util::make_unique<BehaviorTreeDataModel>(model);
     };
 
-    _model_registry->registerModel( QString::fromStdString( toStr(model.type)), node_creator, ID);
+    const QString category = model.inferred_from_usage
+                                 ? QStringLiteral("Unspecified")
+                                 : QString::fromStdString(toStr(model.type));
+    _model_registry->registerModel(category, node_creator, ID);
 
-    _treenode_models.insert( {ID, model } );
+    _treenode_models.insert_or_assign(ID, model);
     _editor_widget->updateTreeView();
 }
 
@@ -1214,6 +1213,7 @@ void MainWindow::onCreateAbsBehaviorTree(const AbsBehaviorTree &tree,
     const QSignalBlocker blocker( container );
     container->loadSceneFromTree( tree );
     container->nodeReorder();
+    _last_status_by_tree.erase(bt_name);
 
     if( secondary_tabs ){
       for(const auto& node: tree.nodes())
@@ -1287,6 +1287,7 @@ void MainWindow::onTreeNodeEdited(QString prev_ID, QString new_ID)
 
 void MainWindow::onActionClearTriggered(bool create_new)
 {
+    _last_status_by_tree.clear();
     for (auto& it: _tab_info)
     {
         it.second->clearScene();
@@ -1581,9 +1582,12 @@ void MainWindow::resetTreeStyle(AbsBehaviorTree &tree){
 void MainWindow::onChangeNodesStatus(const QString& bt_name,
                                      const std::vector<std::pair<int, NodeStatus> > &node_status)
 {
-    auto tree = BuildTreeFromScene( getTabByName(bt_name)->scene() );
-
-    std::vector<NodeStatus> vec_last_status(tree.nodesCount());
+    auto* tab = getTabByName(bt_name);
+    if (!tab) return;
+    auto tree = BuildTreeFromScene(tab->scene());
+    auto& vec_last_status = _last_status_by_tree[bt_name];
+    if (vec_last_status.size() != tree.nodesCount())
+        vec_last_status.assign(tree.nodesCount(), NodeStatus::IDLE);
 
     // printf("---\n");
 
@@ -1591,6 +1595,7 @@ void MainWindow::onChangeNodesStatus(const QString& bt_name,
     {
         const int index = it.first;
         const NodeStatus status = it.second;
+        if (index < 0 || size_t(index) >= tree.nodesCount()) continue;
         auto& abs_node = tree.nodes().at(index);
 
         // printf("%3d: %d, %s\n", index, (int)it.second, abs_node.instance_name.toStdString().c_str());

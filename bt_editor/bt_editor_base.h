@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <nodes/Node>
 #include <deque>
-#include <behaviortree_cpp_v3/bt_factory.h>
+#include <behaviortree_cpp/bt_factory.h>
 
 using BT::NodeStatus;
 using BT::NodeType;
@@ -36,6 +36,9 @@ struct  NodeModel
     NodeType type;
     QString  registration_ID;
     PortModels ports;
+    // A custom node used directly in XML without a TreeNodesModel declaration.
+    // Its actual BT.CPP type is unavailable to the editor; keep its XML spelling.
+    bool inferred_from_usage = false;
 
     bool operator == (const NodeModel& other) const;
     bool operator != (const NodeModel& other) const

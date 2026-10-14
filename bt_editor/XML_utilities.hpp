@@ -18,7 +18,7 @@ void RecursivelyCreateXml(const QtNodes::FlowScene &scene,
                           const QtNodes::Node* node);
 
 bool VerifyXML(QDomDocument& doc,
-               const std::vector<QString> &registered_ID,
+               const NodeModels& registered_models,
                std::vector<QString> &error_messages);
 
 NodeModel buildTreeNodeModelFromXML(const QDomElement &node);

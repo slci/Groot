@@ -2,8 +2,8 @@
 #include "utils.h"
 
 #include "models/SubtreeNodeModel.hpp"
-#include <behaviortree_cpp_v3/basic_types.h>
-#include <behaviortree_cpp_v3/xml_parsing.h>
+#include <behaviortree_cpp/basic_types.h>
+#include <behaviortree_cpp/xml_parsing.h>
 #include <QMessageBox>
 #include <QtDebug>
 #include <QLineEdit>
@@ -22,12 +22,13 @@ NodeModel buildTreeNodeModelFromXML(const QDomElement& node)
         ID = QString(node.attribute("ID"));
     }
 
-    const auto node_type = BT::convertFromString<BT::NodeType>(tag_name.toStdString());
-
-    if( node_type == BT::NodeType::UNDEFINED )
-    {
-        return {};
-    }
+    auto node_type = BT::convertFromString<BT::NodeType>(tag_name.toStdString());
+    const bool inferred = node_type == BT::NodeType::UNDEFINED;
+    // A direct custom tag gives no type information. The shape is enough for
+    // the editor to draw it; saving keeps the original tag.
+    if (inferred)
+        node_type = node.firstChildElement().isNull() ? BT::NodeType::ACTION
+                                                       : BT::NodeType::CONTROL;
 
     // this make sense for ports inside the <BehaviorTree> tag
     QDomNamedNodeMap attributes = node.attributes ();
@@ -36,7 +37,8 @@ NodeModel buildTreeNodeModelFromXML(const QDomElement& node)
         QDomAttr attr = attributes.item(i).toAttr();
 
         QString attr_name( attr.name() );
-        if(attr_name != "ID" && attr_name != "name")
+        if(attr_name != "ID" && attr_name != "name" &&
+           attr_name != "_uid" && attr_name != "_fullpath")
         {
             PortModel port_model;
             port_model.direction = PortDirection::INOUT;
@@ -76,7 +78,9 @@ NodeModel buildTreeNodeModelFromXML(const QDomElement& node)
         }
     }
 
-    return { node_type, ID, ports_list };
+    NodeModel model{node_type, ID, ports_list};
+    model.inferred_from_usage = inferred;
+    return model;
 }
 
 //------------------------------------------------------------------
@@ -95,7 +99,8 @@ NodeModels ReadTreeNodesModel(const QDomElement &root)
              node = node.nextSiblingElement() )
         {
             auto model = buildTreeNodeModelFromXML(node);
-            models.insert( {model.registration_ID, model} );
+            if (BuiltinNodeModels().count(model.registration_ID) == 0)
+                models.insert( {model.registration_ID, model} );
         }
     }
 
@@ -103,11 +108,15 @@ NodeModels ReadTreeNodesModel(const QDomElement &root)
     recursiveStep = [&](QDomElement node)
     {
         auto model = buildTreeNodeModelFromXML(node);
-        if( model.type != NodeType::UNDEFINED &&
-            model.registration_ID.isEmpty() == false &&
-            models.count(model.registration_ID) == 0)
+        if( model.registration_ID.isEmpty() == false &&
+            BuiltinNodeModels().count(model.registration_ID) == 0)
         {
-            models.insert( {model.registration_ID, model} );
+            auto [it, inserted] = models.emplace(model.registration_ID, model);
+            if (!inserted &&
+                (it->second.inferred_from_usage || it->second.type == NodeType::SUBTREE)) {
+                for (const auto& port : model.ports)
+                    it->second.ports.emplace(port.first, port.second);
+            }
         }
 
         for( QDomElement child = node.firstChildElement();
@@ -127,7 +136,8 @@ NodeModels ReadTreeNodesModel(const QDomElement &root)
         {
             first_child = first_child.firstChildElement();
         }
-        recursiveStep( bt_root.firstChildElement() );
+        if (!first_child.isNull())
+            recursiveStep(first_child);
     }
     return models;
 }
@@ -145,7 +155,8 @@ void RecursivelyCreateXml(const FlowScene &scene, QDomDocument &doc, QDomElement
     QString registration_name = bt_node->registrationName();
     QDomElement element;
 
-    if( BuiltinNodeModels().count(registration_name) != 0)
+    if( BuiltinNodeModels().count(registration_name) != 0 ||
+        bt_node->model().inferred_from_usage)
     {
         element = doc.createElement( registration_name.toStdString().c_str() );
     }
@@ -185,27 +196,29 @@ void RecursivelyCreateXml(const FlowScene &scene, QDomDocument &doc, QDomElement
 }
 
 bool VerifyXML(QDomDocument &doc,
-               const std::vector<QString>& registered_ID,
+               const NodeModels& registered_models,
                std::vector<QString>& error_messages)
 {
     error_messages.clear();
     try {
         std::string xml_text = doc.toString().toStdString();
         std::unordered_map<std::string, BT::NodeType> registered_nodes;
-        
-        BT::NodeType node_type; 
-        for(const auto& str: registered_ID)
-        {
-            node_type = BT::convertFromString<BT::NodeType>(str.toStdString());
-            registered_nodes.insert( {str.toStdString(),  node_type});
+        for (const auto& entry : BuiltinNodeModels())
+            registered_nodes[entry.first.toStdString()] = entry.second.type;
+        for (const auto& entry : ReadTreeNodesModel(doc.documentElement())) {
+            if (entry.second.type != BT::NodeType::SUBTREE)
+                registered_nodes[entry.first.toStdString()] = entry.second.type;
         }
+        for (const auto& entry : registered_models)
+            if (entry.second.type != BT::NodeType::SUBTREE)
+                registered_nodes.emplace(entry.first.toStdString(), entry.second.type);
 
         BT::VerifyXML(xml_text, registered_nodes); // may throw
     } catch (std::exception& ex)
     {
         error_messages.push_back(ex.what());
     }
-    return true;
+    return error_messages.empty();
 }
 
 
