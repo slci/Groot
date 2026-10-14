@@ -181,6 +181,10 @@ endif()
 
 INSTALL(TARGETS behavior_tree_editor LIBRARY DESTINATION ${GROOT_LIB_DESTINATION} )
 INSTALL(TARGETS Groot RUNTIME DESTINATION ${GROOT_BIN_DESTINATION} )
+INSTALL(FILES LICENSE LICENSING.md cmake/COPYING-CMAKE-SCRIPTS
+        DESTINATION share/groot/licenses)
+INSTALL(FILES QtNodeEditor/LICENSE
+        DESTINATION share/groot/licenses RENAME QtNodeEditor-LICENSE)
 
 if(ament_cmake_FOUND)
   ament_export_include_directories(include)

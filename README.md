@@ -2,6 +2,8 @@
 
 This fork adapts the original Groot 1 application to BehaviorTree.CPP v4. It has
 been built and tested with BehaviorTree.CPP 4.10.0 and Qt 5.15 on Linux.
+It is an unofficial fork; see [LICENSING.md](LICENSING.md) for license and
+third-party notice details.
 
 Supported paths:
 
